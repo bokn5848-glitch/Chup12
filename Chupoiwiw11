@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Camera BOI</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+    margin:0;
+    background:#000;
+    color:white;
+    font-family:Arial,sans-serif;
+    overflow:hidden;
+}
+
+#camera{
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100%;
+    object-fit:cover;
+}
+
+#faceCanvas{
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100%;
+    pointer-events:none;
+}
+
+.top{
+    position:fixed;
+    top:18px;
+    left:0;
+    right:0;
+    display:flex;
+    justify-content:space-between;
+    padding:0 18px;
+    z-index:10;
+}
+
+.icon{
+    width:50px;
+    height:50px;
+    border:0;
+    border-radius:50%;
+    background:rgba(0,0,0,.5);
+    color:white;
+    font-size:22px;
+}
+
+.bottom{
+    position:fixed;
+    bottom:25px;
+    left:0;
+    right:0;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    z-index:10;
+}
+
+.capture{
+    width:78px;
+    height:78px;
+    border-radius:50%;
+    border:5px solid white;
+    background:white;
+    box-shadow:0 0 0 3px #777;
+}
+
+.capture:active{
+    transform:scale(.9);
+}
+
+.filterPanel{
+    position:fixed;
+    bottom:120px;
+    left:0;
+    right:0;
+    z-index:11;
+    display:flex;
+    gap:9px;
+    overflow-x:auto;
+    padding:10px 15px;
+}
+
+.filterPanel::-webkit-scrollbar{
+    display:none;
+}
+
+.filter{
+    flex:none;
+    padding:10px 14px;
+    border-radius:20px;
+    border:1px solid rgba(255,255,255,.5);
+    background:rgba(0,0,0,.55);
+    color:white;
+    font-size:14px;
+}
+
+.filter.active{
+    background:white;
+    color:black;
+}
+
+#preview{
+    position:fixed;
+    inset:0;
+    z-index:30;
+    background:#000;
+    display:none;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+}
+
+#photo{
+    max-width:95%;
+    max-height:75%;
+    object-fit:contain;
+}
+
+.actions{
+    display:flex;
+    gap:12px;
+}
+
+.action{
+    border:0;
+    border-radius:12px;
+    padding:13px 18px;
+    font-size:15px;
+}
+
+.info{
+    position:fixed;
+    top:78px;
+    left:50%;
+    transform:translateX(-50%);
+    background:rgba(0,0,0,.55);
+    padding:7px 12px;
+    border-radius:15px;
+    font-size:12px;
+    z-index:12;
+}
+</style>
+</head>
+
+<body>
+
+<video id="camera" autoplay playsinline></video>
+<canvas id="faceCanvas"></canvas>
+
+<div class="top">
+    <button class="icon" id="flashBtn" onclick="toggleFlash()">⚡</button>
+    <button class="icon" onclick="switchCamera()">🔄</button>
+</div>
+
+<div class="info" id="info">Đang khởi động camera...</div>
+
+<div class="filterPanel">
+    <button class="filter active" onclick="setFilter('none',this)">🚫 Không</button>
+    <button class="filter" onclick="setFilter('cat',this)">🐱 Mèo</button>
+    <button class="filter" onclick="setFilter('glasses',this)">😎 Kính</button>
+    <button class="filter" onclick="setFilter('crown',this)">👑 Vương miện</button>
+    <button class="filter" onclick="setFilter('heart',this)">💖 Trái tim</button>
+    <button class="filter" onclick="setFilter('blush',this)">🌸 Má hồng</button>
+</div>
+
+<div class="bottom">
+    <button class="capture" onclick="takePhoto()"></button>
+</div>
+
+<div id="preview">
+    <img id="photo">
+    <div class="actions">
+        <button class="action" onclick="downloadPhoto()">💾 Lưu ảnh</button>
+        <button class="action" onclick="closePreview()">↩ Chụp lại</button>
+    </div>
+</div>
+
+<canvas id="photoCanvas" style="display:none"></canvas>
+
+<!-- Face detection -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+
+let stream = null;
+let facing = "user";
+let torch = false;
+let currentFilter = "none";
+let lastFace = null;
+
+const video = document.getElementById("camera");
+const canvas = document.getElementById("faceCanvas");
+const ctx = canvas.getContext("2d");
+const info = document.getElementById("info");
+
+const photoCanvas = document.getElementById("photoCanvas");
+const photoCtx = photoCanvas.getContext("2d");
+
+async function startCamera(){
+
+    try{
+
+        if(stream){
+            stream.getTracks().forEach(t => t.stop());
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({
+            video:{
+                facingMode:{ideal:facing},
+                width:{ideal:1920},
+                height:{ideal:1080}
+            },
+            audio:false
+        });
+
+        video.srcObject = stream;
+
+        const track = stream.getVideoTracks()[0];
+
+        info.textContent = "Camera sẵn sàng";
+
+        setupFaceMesh();
+
+        console.log(track.getCapabilities());
+
+    }catch(e){
+
+        info.textContent = "Không mở được camera";
+
+        alert(
+            "Không mở được camera.\n\n" +
+            "Hãy cấp quyền Camera cho trình duyệt."
+        );
+
+        console.log(e);
+    }
+}
+
+async function toggleFlash(){
+
+    if(!stream){
+        alert("Camera chưa sẵn sàng!");
+        return;
+    }
+
+    const track = stream.getVideoTracks()[0];
+
+    if(!track.applyConstraints){
+        alert("Trình duyệt này không hỗ trợ điều khiển đèn flash.");
+        return;
+    }
+
+    try{
+
+        const capabilities = track.getCapabilities();
+
+        if(!capabilities.torch){
+
+            alert(
+                "Thiết bị/trình duyệt không cho phép điều khiển đèn flash bằng web.\n\n" +
+                "Bạn vẫn có thể dùng camera và filter."
+            );
+
+            return;
+        }
+
+        torch = !torch;
+
+        await track.applyConstraints({
+            advanced:[
+                {torch:torch}
+            ]
+        });
+
+        document.getElementById("flashBtn").textContent =
+            torch ? "🔦" : "⚡";
+
+    }catch(e){
+
+        console.log(e);
+
+        alert(
+            "Không thể bật đèn flash trên thiết bị này."
+        );
+    }
+}
+
+async function switchCamera(){
+
+    facing = facing === "user" ? "environment" : "user";
+
+    torch = false;
+
+    await startCamera();
+}
+
+function setFilter(name,button){
+
+    currentFilter = name;
+
+    document.querySelectorAll(".filter")
+        .forEach(b => b.classList.remove("active"));
+
+    button.classList.add("active");
+
+    if(name === "none"){
+        info.textContent = "Đã tắt filter";
+    }else{
+        info.textContent = "Filter: " + name;
+    }
+}
+
+/* =========================
+   FACE MESH
+========================= */
+
+let faceMesh = null;
+
+function setupFaceMesh(){
+
+    if(faceMesh) return;
+
+    faceMesh = new FaceMesh({
+        locateFile:(file)=>{
+            return "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/" + file;
+        }
+    });
+
+    faceMesh.setOptions({
+        maxNumFaces:1,
+        refineLandmarks:true,
+        minDetectionConfidence:.5,
+        minTrackingConfidence:.5
+    });
+
+    faceMesh.onResults(onFaceResults);
+
+    const camera = new Camera(video,{
+        onFrame:async()=>{
+            await faceMesh.send({image:video});
+        },
+        width:1280,
+        height:720
+    });
+
+    camera.start();
+}
+
+function onFaceResults(results){
+
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    if(
+        results.multiFaceLandmarks &&
+        results.multiFaceLandmarks.length > 0
+    ){
+
+        lastFace = results.multiFaceLandmarks[0];
+
+        drawFilter(lastFace);
+
+    }else{
+
+        lastFace = null;
+    }
+}
+
+/* =========================
+   FILTERS
+========================= */
+
+function point(face,index){
+
+    return {
+        x:face[index].x * canvas.width,
+        y:face[index].y * canvas.height
+    };
+}
+
+function distance(a,b){
+
+    return Math.hypot(
+        a.x-b.x,
+        a.y-b.y
+    );
+}
+
+function drawFilter(face){
+
+    if(currentFilter === "none") return;
+
+    const leftEye = point(face,33);
+    const rightEye = point(face,263);
+
+    const nose = point(face,1);
+
+    const leftEar = point(face,234);
+    const rightEar = point(face,454);
+
+    const eyeDistance =
+        distance(leftEye,rightEye);
+
+    const faceWidth =
+        distance(leftEar,rightEar);
+
+    const centerX =
+        (leftEar.x + rightEar.x) / 2;
+
+    const centerY =
+        (leftEye.y + rightEye.y) / 2;
+
+    if(currentFilter === "glasses"){
+        drawGlasses(
+            leftEye,
+            rightEye,
+            eyeDistance
+        );
+    }
+
+    if(currentFilter === "cat"){
+        drawCatEars(
+            leftEar,
+            rightEar,
+            faceWidth
+        );
+    }
+
+    if(currentFilter === "crown"){
+        drawCrown(
+            centerX,
+            centerY - faceWidth*.55,
+            faceWidth
+        );
+    }
+
+    if(currentFilter === "heart"){
+        drawHearts(
+            centerX,
+            centerY,
+            faceWidth
+        );
+    }
+
+    if(currentFilter === "blush"){
+        drawBlush(
+            face,
+            faceWidth
+        );
+    }
+}
+
+/* KÍNH */
+
+function drawGlasses(left,right,size){
+
+    const y =
+        (left.y+right.y)/2;
+
+    const x =
+        (left.x+right.x)/2;
+
+    ctx.save();
+
+    ctx.lineWidth = Math.max(4,size*.04);
+    ctx.strokeStyle = "white";
+    ctx.fillStyle = "rgba(20,20,20,.35)";
+
+    const r = size*.27;
+
+    ctx.beginPath();
+    ctx.ellipse(
+        left.x,
+        left.y,
+        r,
+        r*.7,
+        0,0,Math.PI*2
+    );
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(
+        right.x,
+        right.y,
+        r,
+        r*.7,
+        0,0,Math.PI*2
+    );
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(
+        left.x+r,
+        y
+    );
+    ctx.lineTo(
+        right.x-r,
+        y
+    );
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+/* TAI MÈO */
+
+function drawCatEars(left,right,size){
+
+    ctx.save();
+
+    ctx.fillStyle = "rgba(255,105,180,.9)";
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 4;
+
+    function ear(x,y,flip){
+
+        ctx.beginPath();
+
+        ctx.moveTo(x,y);
+
+        ctx.lineTo(
+            x + flip*size*.35,
+            y - size*.48
+        );
+
+        ctx.lineTo(
+            x + flip*size*.18,
+            y + size*.05
+        );
+
+        ctx.closePath();
+
+        ctx.fill();
+        ctx.stroke();
+    }
+
+    ear(left.x,left.y,-1);
+    ear(right.x,right.y,1);
+
+    ctx.restore();
+}
+
+/* VƯƠNG MIỆN */
+
+function drawCrown(x,y,size){
+
+    const w = size*.85;
+    const h = size*.35;
+
+    ctx.save();
+
+    ctx.fillStyle = "rgba(255,215,0,.95)";
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 4;
+
+    ctx.beginPath();
+
+    ctx.moveTo(x-w/2,y+h/2);
+
+    ctx.lineTo(
+        x-w/2,
+        y-h/2
+    );
+
+    ctx.lineTo(
+        x-w*.25,
+        y
+    );
+
+    ctx.lineTo(
+        x,
+        y-h*.9
+    );
+
+    ctx.lineTo(
+        x+w*.25,
+        y
+    );
+
+    ctx.lineTo(
+        x+w/2,
+        y-h/2
+    );
+
+    ctx.lineTo(
+        x+w/2,
+        y+h/2
+    );
+
+    ctx.closePath();
+
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+/* TRÁI TIM */
+
+function heart(x,y,size){
+
+    ctx.save();
+
+    ctx.fillStyle = "rgba(255,60,130,.95)";
+
+    ctx.beginPath();
+
+    ctx.moveTo(x,y+size*.3);
+
+    ctx.bezierCurveTo(
+        x-size*.7,
+        y-size*.2,
+        x-size*.35,
+        y-size*.7,
+        x,
+        y-size*.25
+    );
+
+    ctx.bezierCurveTo(
+        x+size*.35,
+        y-size*.7,
+        x+size*.7,
+        y-size*.2,
+        x,
+        y+size*.3
+    );
+
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawHearts(x,y,size){
+
+    heart(
+        x-size*.75,
+        y-size*.55,
+        size*.12
+    );
+
+    heart(
+        x+size*.75,
+        y-size*.45,
+        size*.12
+    );
+
+    heart(
+        x,
+        y-size*.7,
+        size*.15
+    );
+}
+
+/* MÁ HỒNG */
+
+function drawBlush(face,size){
+
+    const left = point(face,50);
+    const right = point(face,280);
+
+    ctx.save();
+
+    ctx.globalAlpha=.35;
+    ctx.fillStyle="#ff5b8d";
+
+    ctx.beginPath();
+    ctx.ellipse(
+        left.x,
+        left.y,
+        size*.16,
+        size*.09,
+        0,0,Math.PI*2
+    );
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.ellipse(
+        right.x,
+        right.y,
+        size*.16,
+        size*.09,
+        0,0,Math.PI*2
+    );
+    ctx.fill();
+
+    ctx.restore();
+}
+
+/* =========================
+   CHỤP ẢNH
+========================= */
+
+function takePhoto(){
+
+    if(!video.videoWidth){
+        alert("Camera chưa sẵn sàng!");
+        return;
+    }
+
+    photoCanvas.width =
+        video.videoWidth;
+
+    photoCanvas.height =
+        video.videoHeight;
+
+    photoCtx.clearRect(
+        0,
+        0,
+        photoCanvas.width,
+        photoCanvas.height
+    );
+
+    /*
+       Camera trước:
+       lật ảnh giống preview.
+    */
+
+    if(facing === "user"){
+
+        photoCtx.save();
+
+        photoCtx.translate(
+            photoCanvas.width,
+            0
+        );
+
+        photoCtx.scale(-1,1);
+
+        photoCtx.drawImage(
+            video,
+            0,
+            0,
+            photoCanvas.width,
+            photoCanvas.height
+        );
+
+        photoCtx.restore();
+
+    }else{
+
+        photoCtx.drawImage(
+            video,
+            0,
+            0,
+            photoCanvas.width,
+            photoCanvas.height
+        );
+    }
+
+    /*
+       Vẽ filter lên ảnh.
+    */
+
+    if(currentFilter !== "none"){
+
+        photoCtx.save();
+
+        /*
+           Filter được vẽ lại
+           theo khuôn mặt cuối cùng.
+        */
+
+        drawFilterOnPhoto(
+            photoCtx,
+            lastFace,
+            photoCanvas.width,
+            photoCanvas.height
+        );
+
+        photoCtx.restore();
+    }
+
+    document.getElementById("photo").src =
+        photoCanvas.toDataURL(
+            "image/jpeg",
+            .95
+        );
+
+    document.getElementById("preview")
+        .style.display="flex";
+}
+
+function drawFilterOnPhoto(
+    c,
+    face,
+    w,
+    h
+){
+
+    if(!face) return;
+
+    /*
+       Chuyển tọa độ face
+       sang kích thước ảnh.
+    */
+
+    const p = (i)=>{
+        return {
+            x:face[i].x*w,
+            y:face[i].y*h
+        };
+    };
+
+    const l=p(33);
+    const r=p(263);
+    const le=p(234);
+    const re=p(454);
+
+    const size=Math.hypot(
+        le.x-re.x,
+        le.y-re.y
+    );
+
+    const centerX=(le.x+re.x)/2;
+    const centerY=(l.y+r.y)/2;
+
+    c.textAlign="center";
+    c.textBaseline="middle";
+
+    if(currentFilter==="glasses"){
+
+        const rr=size*.27;
+
+        c.lineWidth=size*.04;
+        c.strokeStyle="white";
+        c.fillStyle="rgba(20,20,20,.35)";
+
+        c.beginPath();
+        c.ellipse(l.x,l.y,rr,rr*.7,0,0,Math.PI*2);
+        c.fill();
+        c.stroke();
+
+        c.beginPath();
+        c.ellipse(r.x,r.y,rr,rr*.7,0,0,Math.PI*2);
+        c.fill();
+        c.stroke();
+
+        c.beginPath();
+        c.moveTo(l.x+rr,l.y);
+        c.lineTo(r.x-rr,r.y);
+        c.stroke();
+    }
+
+    if(currentFilter==="cat"){
+
+        c.fillStyle="rgba(255,105,180,.9)";
+        c.strokeStyle="white";
+        c.lineWidth=4;
+
+        function ear(x,y,flip){
+
+            c.beginPath();
+            c.moveTo(x,y);
+
+            c.lineTo(
+                x+flip*size*.35,
+                y-size*.48
+            );
+
+            c.lineTo(
+                x+flip*size*.18,
+                y+size*.05
+            );
+
+            c.closePath();
+
+            c.fill();
+            c.stroke();
+        }
+
+        ear(le.x,le.y,-1);
+        ear(re.x,re.y,1);
+    }
+
+    if(currentFilter==="crown"){
+
+        const y=centerY-size*.55;
+        const cw=size*.85;
+        const ch=size*.35;
+
+        c.fillStyle="rgba(255,215,0,.95)";
+        c.strokeStyle="white";
+        c.lineWidth=4;
+
+        c.beginPath();
+
+        c.moveTo(centerX-cw/2,y+ch/2);
+        c.lineTo(centerX-cw/2,y-ch/2);
+        c.lineTo(centerX-cw*.25,y);
+        c.lineTo(centerX,y-ch*.9);
+        c.lineTo(centerX+cw*.25,y);
+        c.lineTo(centerX+cw/2,y-ch/2);
+        c.lineTo(centerX+cw/2,y+ch/2);
+
+        c.closePath();
+        c.fill();
+        c.stroke();
+    }
+
+    if(currentFilter==="heart"){
+
+        c.font=size*.18+"px Arial";
+
+        c.fillStyle="#ff3c82";
+
+        c.fillText(
+            "♥",
+            centerX-size*.7,
+            centerY-size*.5
+        );
+
+        c.fillText(
+            "♥",
+            centerX+size*.7,
+            centerY-size*.5
+        );
+
+        c.fillText(
+            "♥",
+            centerX,
+            centerY-size*.75
+        );
+    }
+
+    if(currentFilter==="blush"){
+
+        const lb=p(50);
+        const rb=p(280);
+
+        c.globalAlpha=.35;
+        c.fillStyle="#ff5b8d";
+
+        c.beginPath();
+        c.ellipse(
+            lb.x,
+            lb.y,
+            size*.16,
+            size*.09,
+            0,0,Math.PI*2
+        );
+        c.fill();
+
+        c.beginPath();
+        c.ellipse(
+            rb.x,
+            rb.y,
+            size*.16,
+            size*.09,
+            0,0,Math.PI*2
+        );
+        c.fill();
+
+        c.globalAlpha=1;
+    }
+}
+
+function downloadPhoto(){
+
+    const a=document.createElement("a");
+
+    a.href=document.getElementById("photo").src;
+
+    a.download=
+        "BOI_CAMERA_"+Date.now()+".jpg";
+
+    a.click();
+}
+
+function closePreview(){
+
+    document.getElementById("preview")
+        .style.display="none";
+}
+
+startCamera();
+
+</script>
+
+</body>
+</html>
